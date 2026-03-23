@@ -105,9 +105,9 @@ python scripts/load_brain.py
 python scripts/create_memory.py \
   --category coding \
   --project my-project \
-  --keywords "关键词1,关键词2" \
   --title "记忆标题" \
-  --quality-score 85
+  --content "记忆内容..." \
+  --mode quick
 ```
 
 ### 检索记忆
@@ -120,7 +120,7 @@ python scripts/search_memory.py \
 ### 压缩记忆
 ```bash
 python scripts/compress.py \
-  --memory memories/coding/old_memory.md
+  --memory .memory/memories/coding/old_memory.md
 ```
 
 ## 价值评估标准

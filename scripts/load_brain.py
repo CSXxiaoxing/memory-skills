@@ -18,6 +18,11 @@ import re
 import json
 from datetime import datetime
 from pathlib import Path
+import argparse
+
+script_dir = Path(__file__).parent
+sys.path.insert(0, str(script_dir))
+from project_utils import resolve_brain_path
 
 
 def parse_yaml_frontmatter(content):
@@ -61,8 +66,9 @@ def parse_markdown_table(content, table_header):
     Returns:
         list: 表格数据列表
     """
-    # 查找表格位置
-    pattern = rf'###\s+{table_header}\s*\n\n\|.*?\|\n\|.*?\|\n((?:\|.*?\|\n)+)'
+    # 查找表格位置（兼容不同标题级别与Emoji）
+    header = re.escape(table_header)
+    pattern = r'#{1,6}\s+.*' + header + r'\s*\n\n\|.*?\|\n\|.*?\|\n((?:\|.*?\|\n)+)'
     match = re.search(pattern, content)
     
     if not match:
@@ -75,7 +81,7 @@ def parse_markdown_table(content, table_header):
         if line.startswith('|'):
             # 分割表格列
             cells = [cell.strip() for cell in line.split('|')[1:-1]]
-            if cells and cells[0] and cells[0] != '-':
+            if cells and cells[0] and cells[0] not in ('-', '(空)'):
                 rows.append(cells)
     
     return rows
@@ -396,9 +402,16 @@ def main():
     """
     主函数：加载大脑并输出状态
     """
+    parser = argparse.ArgumentParser(description="加载大脑并输出状态")
+    parser.add_argument("--brain-path", type=str, help="brain.md路径")
+    parser.add_argument("--project-root", type=str, help="项目根目录(可选,用于自动定位brain)")
+    args = parser.parse_args()
+
     # 获取brain.md路径
-    script_dir = Path(__file__).parent
-    brain_path = script_dir.parent / 'brain.md'
+    if args.brain_path:
+        brain_path = resolve_brain_path(explicit_path=args.brain_path)
+    else:
+        brain_path = resolve_brain_path(start_path=args.project_root or os.getcwd())
     
     try:
         # 加载大脑

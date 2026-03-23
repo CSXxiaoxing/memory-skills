@@ -5,6 +5,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from scripts.project_utils import resolve_brain_path
+
 script_dir = Path(__file__).parent
 
 def read_file_safely(file_path):
@@ -25,7 +27,9 @@ def generate_memory_id():
     sequence = str(microsecond // 1000).zfill(3)
     return f"mem_{timestamp}_{sequence}"
 
-def generate_filename(title=None):
+def generate_filename(memory_id=None, title=None):
+    if memory_id:
+        return f"{memory_id}.md"
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     if title:
         identifier = re.sub(r'[^\w\u4e00-\u9fff]', '', title)[:20]
@@ -38,6 +42,7 @@ def generate_filename(title=None):
 def create_memory_document(metadata, content):
     yaml_lines = ['---']
     yaml_lines.append(f"id: {metadata.get('id', '')}")
+    yaml_lines.append(f"title: {metadata.get('title', '')}")
     yaml_lines.append(f"category: {metadata.get('category', 'other')}")
     yaml_lines.append(f"project: {metadata.get('project', '')}")
     yaml_lines.append(f"brain_dominant: {metadata.get('brain_dominant', 'both')}")
@@ -57,8 +62,8 @@ def create_memory_document(metadata, content):
     document = '\n'.join(yaml_lines) + '\n' + content
     return document
 
-def save_memory(document, category, filename, memories_dir='memories'):
-    brain_dir = script_dir.parent
+def save_memory(document, category, filename, brain_path, memories_dir='memories'):
+    brain_dir = Path(brain_path).parent
     category_dir = brain_dir / memories_dir / category
     category_dir.mkdir(parents=True, exist_ok=True)
     save_path = category_dir / filename
@@ -253,7 +258,7 @@ def refresh_token(old_token: str) -> dict:
 
 # Generate IDs and timestamps
 memory_id = generate_memory_id()
-filename = generate_filename(metadata.get('title'))
+filename = generate_filename(memory_id=memory_id, title=metadata.get('title'))
 now = datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ')
 
 # Complete metadata
@@ -267,11 +272,11 @@ metadata['strength'] = 1.0
 document = create_memory_document(metadata, content)
 
 # Save memory
-save_path = save_memory(document, metadata['category'], filename)
+brain_path = resolve_brain_path(start_path=Path.cwd())
+save_path = save_memory(document, metadata['category'], filename, brain_path)
 print(f"Memory saved to: {save_path}")
 
 # Update brain index
-brain_path = script_dir / 'brain.md'
 brain_updated = update_brain_index(str(brain_path), metadata, operation='add')
 print(f"Brain index updated: {brain_updated}")
 

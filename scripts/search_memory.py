@@ -25,6 +25,7 @@ from datetime import datetime
 script_dir = Path(__file__).parent
 sys.path.insert(0, str(script_dir))
 from load_brain import load_brain
+from project_utils import resolve_brain_path, get_memory_dir
 
 
 def read_file_safely(file_path):
@@ -50,6 +51,15 @@ def read_file_safely(file_path):
             continue
     
     return None
+
+
+def _strip_quotes(value: str) -> str:
+    if not value:
+        return value
+    value = value.strip()
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    return value
 
 
 def extract_memory_metadata(memory_path):
@@ -91,7 +101,7 @@ def extract_memory_metadata(memory_path):
         
         title_match = re.search(r'^title:\s*(.+)$', yaml_content, re.MULTILINE)
         if title_match:
-            metadata['title'] = title_match.group(1).strip()
+            metadata['title'] = _strip_quotes(title_match.group(1).strip())
         
         category_match = re.search(r'^category:\s*(.+)$', yaml_content, re.MULTILINE)
         if category_match:
@@ -99,7 +109,7 @@ def extract_memory_metadata(memory_path):
         
         project_match = re.search(r'^project:\s*(.+)$', yaml_content, re.MULTILINE)
         if project_match:
-            metadata['project'] = project_match.group(1).strip()
+            metadata['project'] = _strip_quotes(project_match.group(1).strip())
         
         keywords_match = re.search(r'keywords:\s*\[(.*?)\]', yaml_content)
         if keywords_match:
@@ -125,6 +135,35 @@ def extract_memory_metadata(memory_path):
             metadata['title'] = title_match.group(1).strip()
     
     return metadata
+
+
+def build_id_cache(memory_dir: Path):
+    """
+    Build a map of memory_id -> file path by scanning a category directory.
+    """
+    id_map = {}
+    if not memory_dir.exists():
+        return id_map
+    for f in memory_dir.glob("*.md"):
+        meta = extract_memory_metadata(str(f))
+        if meta and meta.get("id"):
+            id_map[meta["id"]] = str(f)
+    return id_map
+
+
+def resolve_memory_path(memory_id: str, category: str, brain_path: Path, id_cache: dict):
+    memory_dir = get_memory_dir(brain_path) / category
+    candidates = [memory_dir / f"{memory_id}.md"]
+    if memory_id.startswith("mem_"):
+        candidates.append(memory_dir / f"{memory_id[4:]}.md")
+    for p in candidates:
+        if p.exists():
+            return str(p)
+
+    # Fallback: scan category directory by YAML id
+    if category not in id_cache:
+        id_cache[category] = build_id_cache(memory_dir)
+    return id_cache[category].get(memory_id)
 
 
 def get_memory_summary(memory_path, max_length=200):
@@ -158,7 +197,38 @@ def get_memory_summary(memory_path, max_length=200):
     return summary + '...' if len(summary) == max_length else summary
 
 
-def collect_candidate_memories(brain_data, category=None, project=None, keywords=None, max_candidates=20):
+def scan_memories_from_disk(brain_path: Path, category: str | None = None):
+    """
+    Fallback: scan memory files directly when brain index is empty or out-of-sync.
+    """
+    memory_root = get_memory_dir(brain_path)
+    if not memory_root.exists():
+        return []
+
+    categories = []
+    if category:
+        categories = [category]
+    else:
+        categories = [p.name for p in memory_root.iterdir() if p.is_dir()]
+
+    scanned = []
+    for cat in categories:
+        cat_dir = memory_root / cat
+        if not cat_dir.exists():
+            continue
+        for f in cat_dir.glob("*.md"):
+            meta = extract_memory_metadata(str(f))
+            if not meta:
+                continue
+            if not meta.get("category"):
+                meta["category"] = cat
+            meta["path"] = str(f)
+            scanned.append(meta)
+
+    return scanned
+
+
+def collect_candidate_memories(brain_data, brain_path, category=None, project=None, keywords=None, max_candidates=20):
     """
     收集候选记忆
     
@@ -174,21 +244,45 @@ def collect_candidate_memories(brain_data, category=None, project=None, keywords
     """
     memories = brain_data.get('memories', [])
     candidates = []
-    
-    # 获取brain.md所在目录
-    brain_dir = script_dir.parent
+
+    # Fallback: if brain index is empty, scan disk
+    if not memories:
+        disk_memories = scan_memories_from_disk(brain_path, category=category)
+        for metadata in disk_memories:
+            # 初步筛选(基于类别和项目)
+            if category and metadata.get('category') != category:
+                continue
+            if project and metadata.get('project') != project:
+                continue
+
+            metadata['summary'] = get_memory_summary(metadata['path'])
+
+            preliminary_score = 0
+            if category and metadata.get('category') == category:
+                preliminary_score += 40
+            if project and metadata.get('project') == project:
+                preliminary_score += 30
+            if keywords:
+                memory_keywords = set(metadata.get('keywords', []))
+                target_keywords = set(keywords)
+                matched = memory_keywords & target_keywords
+                preliminary_score += min(20, len(matched) * 5)
+
+            metadata['preliminary_score'] = preliminary_score
+            candidates.append(metadata)
+
+        candidates.sort(key=lambda m: m.get('preliminary_score', 0), reverse=True)
+        return candidates[:max_candidates]
+
+    id_cache = {}
     
     for memory in memories:
         memory_id = memory.get('id', '')
         memory_category = memory.get('category', 'other')
         
-        # 从ID提取文件名
-        if memory_id.startswith('mem_'):
-            filename = memory_id[4:] + '.md'
-        else:
-            filename = memory_id + '.md'
-        
-        memory_path = brain_dir / 'memories' / memory_category / filename
+        memory_path = resolve_memory_path(memory_id, memory_category, brain_path, id_cache)
+        if not memory_path:
+            continue
         
         # 提取元数据
         metadata = extract_memory_metadata(str(memory_path))
@@ -250,7 +344,7 @@ def prepare_search_context(brain_path, category=None, project=None, keywords=Non
     brain_data = load_brain(str(brain_path))
     
     # 收集候选记忆
-    candidates = collect_candidate_memories(brain_data, category, project, keywords)
+    candidates = collect_candidate_memories(brain_data, brain_path, category, project, keywords)
     
     if not candidates:
         return {
@@ -388,7 +482,7 @@ def apply_search_results(results_json):
         }
 
 
-def legacy_search(brain_data, category=None, project=None, keywords=None):
+def legacy_search(brain_data, brain_path, category=None, project=None, keywords=None):
     """
     旧版硬编码评分检索(向后兼容)
     
@@ -404,18 +498,15 @@ def legacy_search(brain_data, category=None, project=None, keywords=None):
     memories = brain_data.get('memories', [])
     results = []
     
-    brain_dir = script_dir.parent
+    id_cache = {}
     
     for memory in memories:
         memory_id = memory.get('id', '')
         memory_category = memory.get('category', 'other')
         
-        if memory_id.startswith('mem_'):
-            filename = memory_id[4:] + '.md'
-        else:
-            filename = memory_id + '.md'
-        
-        memory_path = brain_dir / 'memories' / memory_category / filename
+        memory_path = resolve_memory_path(memory_id, memory_category, brain_path, id_cache)
+        if not memory_path:
+            continue
         
         # 提取元数据
         metadata = extract_memory_metadata(str(memory_path))
@@ -495,14 +586,15 @@ def main():
     parser.add_argument('--mode', type=str, choices=['prepare', 'apply', 'legacy'],
                        default='prepare', help='工作模式')
     parser.add_argument('--brain-path', type=str, help='brain.md路径')
+    parser.add_argument('--project-root', type=str, help='项目根目录(可选,用于自动定位brain)')
     
     args = parser.parse_args()
     
     # 获取brain.md路径
     if args.brain_path:
-        brain_path = Path(args.brain_path)
+        brain_path = resolve_brain_path(explicit_path=args.brain_path)
     else:
-        brain_path = script_dir.parent / 'brain.md'
+        brain_path = resolve_brain_path(start_path=args.project_root or os.getcwd())
     
     # 解析关键词
     keywords = None
@@ -563,6 +655,7 @@ def main():
             
             results = legacy_search(
                 brain_data,
+                brain_path,
                 category=args.category,
                 project=args.project,
                 keywords=keywords

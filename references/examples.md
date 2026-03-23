@@ -73,7 +73,7 @@ python scripts/create_memory.py \
   "memory": {
     "id": "mem_20250319_143000_001",
     "title": "记忆压缩机制实现",
-    "path": "memories/coding/20250319_143000_记忆压缩机制实现.md",
+    "path": ".memory/memories/coding/mem_20250319_143000_001.md",
     "category": "coding",
     "project": "memory-skills",
     "keywords": ["记忆", "压缩", "遗忘"],
@@ -107,7 +107,7 @@ python scripts/search_memory.py \
     {
       "id": "mem_20250319_143000_001",
       "title": "记忆压缩机制实现",
-      "path": "memories/coding/20250319_143000_记忆压缩机制实现.md",
+      "path": ".memory/memories/coding/mem_20250319_143000_001.md",
       "category": "coding",
       "project": "memory-skills",
       "match_score": 60,
@@ -132,7 +132,7 @@ python scripts/search_memory.py \
 
 ```bash
 python scripts/compress.py \
-  --memory memories/coding/20250301_old.md
+  --memory .memory/memories/coding/20250301_old.md
 ```
 
 输出示例：
@@ -155,7 +155,7 @@ python scripts/compress.py \
     "archived": true,
     "archive_path": "archive/20250301_old_20250319_143000.md"
   },
-  "output_path": "memories/coding/20250301_old.md"
+  "output_path": ".memory/memories/coding/20250301_old.md"
 }
 ```
 
