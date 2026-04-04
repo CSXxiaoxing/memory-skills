@@ -22,30 +22,9 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-
-def read_file_safely(file_path):
-    """
-    安全读取文件(支持多种编码)
-    
-    Args:
-        file_path: 文件路径
-    
-    Returns:
-        str: 文件内容
-    """
-    if not os.path.exists(file_path):
-        return None
-    
-    encodings = ['utf-8', 'gbk', 'gb2312', 'latin1']
-    
-    for encoding in encodings:
-        try:
-            with open(file_path, 'r', encoding=encoding) as f:
-                return f.read()
-        except (UnicodeDecodeError, UnicodeError):
-            continue
-    
-    return None
+script_dir = Path(__file__).parent
+sys.path.insert(0, str(script_dir))
+from project_utils import read_file_safely
 
 
 def extract_structure(content):

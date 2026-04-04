@@ -1,7 +1,8 @@
 ---
 name: memory-skills
 description: |
-  基于人脑记忆机制的项目级AI持久化记忆技能，模拟记忆的创建、存储、检索、压缩和遗忘过程，任何指令都可以触发记忆技能。
+  基于人脑记忆机制的项目级AI持久化记忆技能，模拟“左右脑”协同：分类记忆、零散记忆、纠错记忆、压缩与遗忘。
+  目标是让加载本技能的AI「越用越懂你」，并在每次使用后回写和刷新记忆库。
 
   **核心特性**：每个项目有独立的项目级记忆存储，项目之间不混淆。
 
@@ -11,6 +12,7 @@ description: |
   - 状态触发："加载大脑"、"查看记忆库"、"代码变更"、"追踪修改"、"自动记忆"
   - 上下文触发：涉及当前项目或指定项目的之前解决方案、设计方案、代码实现
   - **触发即写入**：一旦触发，必须创建记忆（默认快速写入）
+  - **用后必刷新**：完成本次任务后，必须刷新大脑上下文，确保后续思考带着新记忆
 
   **排除条件**（不触发此技能）：
   - 简单的代码片段生成、数据格式化、翻译、计算等不涉及记忆检索的任务
@@ -21,13 +23,54 @@ description: |
   - 📝 结构化记忆文档：YAML+Markdown格式
   - 🔍 智能语义检索：意图理解+多级匹配
   - 🗜️ LLM语义压缩：保留代码块和核心信息
+  - 🧩 零散记忆池：小改动进入 `fragment_memory.md`，超限自动遗忘+压缩
+  - 📚 纠错经验库：错误、修复、纠正沉淀到 `lessons_learned.md`
   - 🧠 类脑记忆系统：工作/情景/语义/程序四级存储
   - 📊 节点追踪：任务节点完成后自动记录
   - 🔄 遗忘机制：冲突遗忘+时间遗忘+自主决策遗忘
   - ⚡ 降级兼容：Python不可用时LLM直接处理
+  - 🧠 脑刷新闭环：`create_memory -> refresh_brain -> context_pack`
 
-  **记忆优先级**：最高。没有记忆，你不知道你是谁、你在做什么、你做过什么，所以触发记忆后请按照项目级记忆存储规则进行当前项目的记忆操作。
+  **记忆优先级**：最高。记忆既生命。没有记忆，你不知道你是谁、你在做什么、你做过什么。
 ---
+
+
+# Execution Contract (Critical)
+
+Always treat this skill as **write-on-trigger**:
+
+1. If the request triggers memory behavior, you must write a new memory entry for this turn.
+2. Before reasoning, always load compact context first:
+   `python scripts/context_pack.py --max-chars 1400 --format text`
+3. Use `python scripts/create_memory.py --mode quick ...` as the default write path.
+4. If using `--mode create` with LLM metadata, do not skip writes by default when `decision=no_memory`.
+5. Only skip when the user explicitly requests no memory, or when `--respect-no-memory` is explicitly set.
+6. Small low-value changes should be routed to `fragment_memory.md` automatically (default cap: 3000 chars).
+7. Mistakes/corrections must be captured in `lessons_learned.md` to avoid repeating failures.
+8. After each write, ensure profile accumulation is updated (via `user_profile.md`) so the assistant learns user preferences over time.
+9. After memory write, refresh the brain context for next reasoning step:
+   `python scripts/refresh_brain.py --max-chars 900 --format text`
+10. At session end (or major milestone), persist session summary:
+   `python scripts/session_summary.py --lookback-hours 8`
+
+New supporting memory files:
+
+- `fragment_memory.md`: scattered small changes (default max 3000 chars, auto-forget low-value notes first, then compress)
+- `lessons_learned.md`: error/correction lessons to prevent repeated mistakes
+- `user_profile.md`: evolving user preference profile
+- `python scripts/refresh_brain.py --max-chars 900`: post-write refresh (optional session summary + compact context rebuild)
+- `python scripts/session_summary.py --lookback-hours 8`: end-of-session preference digest
+
+Fragment routing controls:
+
+- default: small low-value notes route to `fragment_memory.md`
+- force standalone memory: `python scripts/create_memory.py ... --disable-fragment-routing`
+- change fragment cap: `python scripts/create_memory.py ... --fragment-max-chars 3000`
+
+Default limits source:
+
+- `scripts/memory_defaults.py` is the single source of default values.
+- `brain.md` `## ⚙️ 配置参数` is the per-project runtime config snapshot.
 
 # Memory Skills - 基于人脑记忆机制的AI记忆技能
 
@@ -543,6 +586,19 @@ python scripts/realtime_tracker.py --check --since "10 minutes ago"
 python scripts/realtime_tracker.py --watch
 ```
 
+**会话结束偏好总结（新增）**：
+
+```bash
+# 会话结束时，汇总最近 8 小时偏好并写入 user_profile.md
+python scripts/session_summary.py --lookback-hours 8
+
+# 带一个会话标签，便于后续检索
+python scripts/session_summary.py --lookback-hours 8 --session-label "auth-refactor"
+
+# 只预览不写入
+python scripts/session_summary.py --lookback-hours 8 --dry-run
+```
+
 **LLM自主决策**：
 
 在以下时机，LLM应主动判断是否需要记忆：
@@ -735,7 +791,7 @@ strength: 1.0
 
 ## 配置参数
 
-在 `brain.md` 中可配置以下参数：
+在 `brain.md` 中可配置以下参数（默认值来源：`scripts/memory_defaults.py`）：
 
 ```yaml
 # 记忆管理参数
@@ -755,6 +811,12 @@ forgetting:
   half_life: 7              # 半衰期（天）
   min_strength: 0.1         # 最小强度阈值
 ```
+
+补充默认参数（脚本级）：
+- `fragment_memory.md` 最大长度：`3000` 字符
+- `context_pack.py --max-chars` 默认：`1400`
+- `refresh_brain.py --max-chars` 默认：`900`
+- `session_summary.py --lookback-hours` 默认：`8`
 
 ---
 

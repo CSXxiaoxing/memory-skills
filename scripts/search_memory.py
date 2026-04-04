@@ -25,32 +25,7 @@ from datetime import datetime
 script_dir = Path(__file__).parent
 sys.path.insert(0, str(script_dir))
 from load_brain import load_brain
-from project_utils import resolve_brain_path, get_memory_dir
-
-
-def read_file_safely(file_path):
-    """
-    安全读取文件(支持多种编码)
-    
-    Args:
-        file_path: 文件路径
-    
-    Returns:
-        str: 文件内容
-    """
-    if not os.path.exists(file_path):
-        return None
-    
-    encodings = ['utf-8', 'gbk', 'gb2312', 'latin1']
-    
-    for encoding in encodings:
-        try:
-            with open(file_path, 'r', encoding=encoding) as f:
-                return f.read()
-        except (UnicodeDecodeError, UnicodeError):
-            continue
-    
-    return None
+from project_utils import resolve_brain_path, get_memory_dir, read_file_safely
 
 
 def _strip_quotes(value: str) -> str:
@@ -228,6 +203,80 @@ def scan_memories_from_disk(brain_path: Path, category: str | None = None):
     return scanned
 
 
+def _extract_profile_or_lessons_items(content: str, max_items: int = 8):
+    items = []
+    for m in re.finditer(r'^\- \[(\d+)\] (.+)$', content or '', flags=re.MULTILINE):
+        cnt = int(m.group(1))
+        txt = m.group(2).strip()
+        if cnt <= 0 or txt.lower() in {'none yet', 'none'}:
+            continue
+        items.append((cnt, txt))
+    items.sort(key=lambda x: (-x[0], x[1]))
+    return [txt for _, txt in items[:max_items]]
+
+
+def _extract_fragment_items(content: str, max_items: int = 8):
+    items = []
+    for m in re.finditer(r'^\- \[([^\]]+)\] \(score:(-?\d+)\) (.+)$', content or '', flags=re.MULTILINE):
+        score = int(m.group(2))
+        note = m.group(3).strip()
+        if score <= 0:
+            continue
+        items.append(note)
+    return items[:max_items]
+
+
+def collect_aux_candidates(brain_path: Path, project: str | None = None, keywords=None, max_candidates: int = 6):
+    brain_dir = Path(brain_path).parent
+    sources = [
+        ("aux_profile", "user_profile.md", "user_profile", "profile"),
+        ("aux_lessons", "lessons_learned.md", "lessons", "lessons"),
+        ("aux_fragment", "fragment_memory.md", "fragment", "fragment"),
+    ]
+    out = []
+    target_keywords = set(keywords or [])
+
+    for aux_id, filename, title, category in sources:
+        path = brain_dir / filename
+        if not path.exists():
+            continue
+        content = read_file_safely(str(path)) or ""
+        if not content.strip():
+            continue
+
+        if filename == "fragment_memory.md":
+            items = _extract_fragment_items(content, max_items=8)
+        else:
+            items = _extract_profile_or_lessons_items(content, max_items=8)
+        if not items:
+            continue
+
+        text_blob = " ".join(items)
+        aux_keywords = [kw for kw in target_keywords if kw.lower() in text_blob.lower()]
+        preliminary_score = 10 + min(20, len(aux_keywords) * 5)
+        if project:
+            preliminary_score += 5
+
+        out.append(
+            {
+                "path": str(path),
+                "id": aux_id,
+                "title": title,
+                "category": category,
+                "project": project or "global",
+                "keywords": aux_keywords,
+                "quality_score": 60,
+                "created_at": datetime.now().strftime("%Y-%m-%d"),
+                "strength": 1.0,
+                "summary": " | ".join(items[:4])[:300],
+                "preliminary_score": preliminary_score,
+            }
+        )
+
+    out.sort(key=lambda m: m.get("preliminary_score", 0), reverse=True)
+    return out[:max_candidates]
+
+
 def collect_candidate_memories(brain_data, brain_path, category=None, project=None, keywords=None, max_candidates=20):
     """
     收集候选记忆
@@ -343,8 +392,20 @@ def prepare_search_context(brain_path, category=None, project=None, keywords=Non
     # 加载大脑
     brain_data = load_brain(str(brain_path))
     
-    # 收集候选记忆
-    candidates = collect_candidate_memories(brain_data, brain_path, category, project, keywords)
+    # 收集候选记忆：优先主记忆，辅助记忆只做补充，避免喧宾夺主
+    primary_candidates = collect_candidate_memories(brain_data, brain_path, category, project, keywords)
+    aux_candidates = collect_aux_candidates(Path(brain_path), project=project, keywords=keywords, max_candidates=6)
+
+    primary_candidates.sort(key=lambda m: m.get('preliminary_score', 0), reverse=True)
+    aux_candidates.sort(key=lambda m: m.get('preliminary_score', 0), reverse=True)
+
+    if primary_candidates:
+        candidates = primary_candidates[:20]
+        remaining = max(0, 20 - len(candidates))
+        if remaining > 0:
+            candidates.extend(aux_candidates[:remaining])
+    else:
+        candidates = aux_candidates[:20]
     
     if not candidates:
         return {
@@ -395,6 +456,8 @@ def prepare_search_context(brain_path, category=None, project=None, keywords=Non
         'prompt_template': prompt_template,
         'stats': {
             'total_candidates': len(candidates),
+            'primary_candidates': len(primary_candidates),
+            'aux_candidates': len(aux_candidates),
             'category_filtered': category is not None,
             'project_filtered': project is not None,
             'keyword_count': len(keywords) if keywords else 0

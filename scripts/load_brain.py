@@ -22,6 +22,16 @@ import argparse
 
 script_dir = Path(__file__).parent
 sys.path.insert(0, str(script_dir))
+from memory_defaults import (
+    CUE_DECAY_FACTOR_DEFAULT,
+    CUE_MAX_KEYWORDS_DEFAULT,
+    CUE_MIN_FREQUENCY_DEFAULT,
+    FORGETTING_HALF_LIFE_DEFAULT,
+    FORGETTING_MIN_STRENGTH_DEFAULT,
+    MEMORY_ARCHIVE_AFTER_DAYS_DEFAULT,
+    MEMORY_COMPRESSION_THRESHOLD_DEFAULT,
+    MEMORY_MAX_PER_CATEGORY_DEFAULT,
+)
 from project_utils import resolve_brain_path
 
 
@@ -278,20 +288,20 @@ updated_at: {now}
 ```yaml
 # 记忆管理参数
 memory:
-  max_per_category: 50      # 每个类别最大记忆数
-  compression_threshold: 500  # 压缩阈值（行数）
-  archive_after_days: 30     # 归档天数
+  max_per_category: {MEMORY_MAX_PER_CATEGORY_DEFAULT}      # 每个类别最大记忆数
+  compression_threshold: {MEMORY_COMPRESSION_THRESHOLD_DEFAULT}  # 压缩阈值（行数）
+  archive_after_days: {MEMORY_ARCHIVE_AFTER_DAYS_DEFAULT}     # 归档天数
   
 # 线索网络参数
 cue_network:
-  max_keywords: 100         # 最大关键词数
-  min_frequency: 2          # 最小出现频率
-  decay_factor: 0.95        # 衰减因子
+  max_keywords: {CUE_MAX_KEYWORDS_DEFAULT}         # 最大关键词数
+  min_frequency: {CUE_MIN_FREQUENCY_DEFAULT}          # 最小出现频率
+  decay_factor: {CUE_DECAY_FACTOR_DEFAULT}        # 衰减因子
   
 # 遗忘曲线参数
 forgetting:
-  half_life: 7              # 半衰期（天）
-  min_strength: 0.1         # 最小强度阈值
+  half_life: {FORGETTING_HALF_LIFE_DEFAULT}              # 半衰期（天）
+  min_strength: {FORGETTING_MIN_STRENGTH_DEFAULT}         # 最小强度阈值
 ```
 
 ## 🕸️ 线索网络
@@ -335,7 +345,7 @@ forgetting:
     with open(brain_path, 'w', encoding='utf-8') as f:
         f.write(default_content)
     
-    print(f"✅ 大脑初始化完成: {brain_path}")
+    print(f"[OK] 大脑初始化完成: {brain_path}")
     
     # 返回初始化数据
     return {
@@ -366,7 +376,7 @@ def load_brain(brain_path):
     """
     # 检查文件是否存在
     if not os.path.exists(brain_path):
-        print(f"⚠️  大脑文件不存在，正在初始化...")
+        print("Brain file not found, initializing...")
         return initialize_brain(brain_path)
     
     # 读取文件

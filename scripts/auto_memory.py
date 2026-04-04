@@ -26,6 +26,19 @@ from pathlib import Path
 from typing import Optional
 
 script_dir = Path(__file__).parent
+sys.path.insert(0, str(script_dir))
+from load_brain import load_brain
+from project_utils import (
+    resolve_brain_path,
+    find_project_root,
+    read_file_safely,
+    generate_memory_id,
+    save_memory,
+    update_brain_index,
+    update_cue_network,
+    generate_filename,
+    create_memory_document,
+)
 
 
 def run_command(cmd, cwd=None):
@@ -366,85 +379,6 @@ def generate_diff_summary(diff_content, changed_files):
     return ", ".join(summaries) if summaries else "Code modified"
 
 
-def update_brain_index(brain_path, new_memory):
-    """更新brain.md索引"""
-    try:
-        with open(brain_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-    except:
-        content = ""
-
-    # 更新记忆索引表
-    memory_id = new_memory["id"]
-    title = f"代码变更: {', '.join(new_memory['files'][:2])}"
-    if len(new_memory['files']) > 2:
-        title += f" (+{len(new_memory['files'])-2} more)"
-    category = "coding"
-    project = "current"
-
-    # 查找索引表位置
-    if "| ID | 标题" in content:
-        # 在表格最后一行后添加新记忆
-        old_line = "| (空) | - | - | - | - | - | - | - |"
-        new_line = f"| {memory_id} | {title} | {category} | {project} | {new_memory.get('quality_score', 50)} | 1.0 | {datetime.now().strftime('%Y-%m-%d')} | 0 |\n{old_line}"
-        content = content.replace(old_line, new_line)
-
-    # 更新总记忆数
-    content = update_memory_count(content, 1)
-
-    # 更新最近活动
-    content = update_recent_activity(content, f"创建", memory_id, title)
-
-    # 更新关键词索引
-    for f in new_memory["files"]:
-        filename = Path(f).name
-        if filename not in content:
-            content = content.replace(
-                "| (空) | - |",
-                f"| {filename} | 1 |\n| (空) | - |"
-            )
-
-    # 更新类别索引
-    content = content.replace(
-        "| coding | N |",
-        "| coding | Y |"
-    )
-
-    try:
-        with open(brain_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-        return True
-    except Exception as e:
-        print(f"Failed to update brain: {e}")
-        return False
-
-
-def update_memory_count(content, delta):
-    """更新记忆总数"""
-    match = re.search(r"\| 总记忆数 \| (\d+) \|", content)
-    if match:
-        current = int(match.group(1))
-        new_count = current + delta
-        content = content.replace(
-            f"| 总记忆数 | {current} |",
-            f"| 总记忆数 | {new_count} |"
-        )
-    return content
-
-
-def update_recent_activity(content, operation, memory_id, detail):
-    """更新最近活动"""
-    now = datetime.now().strftime('%Y-%m-%d %H:%M')
-    new_entry = f"| {now} | {operation} | {memory_id} | {detail} |"
-
-    # 替换空行或添加新行
-    old_empty = "| - | - | - | - |"
-    if old_empty in content:
-        content = content.replace(old_empty, new_entry + "\n" + old_empty)
-
-    return content
-
-
 def install_git_hook(repo_path, hook_type="post-commit"):
     """安装Git Hook"""
     hooks_dir = Path(repo_path) / ".git" / "hooks"
@@ -489,11 +423,12 @@ def main():
 
     # 设置brain路径
     if args.brain_path:
-        brain_path = Path(args.brain_path)
+        brain_path = resolve_brain_path(explicit_path=args.brain_path)
     else:
-        brain_path = Path(cwd) / ".memory" / "brain.md"
-        if not brain_path.exists():
-            brain_path = Path(cwd) / "brain.md"
+        brain_path = resolve_brain_path(start_path=cwd)
+
+    # 确保大脑文件和目录结构存在
+    load_brain(str(brain_path))
 
     # 安装Hook
     if args.install_hook:
@@ -549,16 +484,42 @@ def main():
 
         memory = create_diff_memory(brain_path, detailed_diff, change_info)
 
-        # 保存记忆文件
-        memory_dir = brain_path.parent / "memories" / "coding"
-        memory_dir.mkdir(parents=True, exist_ok=True)
+        # 保存记忆文件（统一写入路径）
+        memory_filename = generate_filename(memory_id=memory["id"])
+        memory_path = save_memory(
+            memory["content"],
+            category="coding",
+            filename=memory_filename,
+            brain_path=str(brain_path),
+        )
 
-        memory_file = memory_dir / f"{memory['id']}.md"
-        with open(memory_file, 'w', encoding='utf-8') as f:
-            f.write(memory["content"])
+        # 更新索引（使用统一接口）
+        project_name = find_project_root(cwd).name
+        metadata = {
+            "id": memory['id'],
+            "title": f"代码变更: {', '.join(memory['files'][:2])}" + (f" (+{len(memory['files'])-2} more)" if len(memory['files']) > 2 else ""),
+            "category": "coding",
+            "project": project_name,
+            "quality_score": memory.get('quality_score', 50),
+            "created_at": datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ'),
+        }
+        brain_updated = update_brain_index(str(brain_path), metadata, operation="add")
+        
+        # 更新线索网络
+        cue_updated = update_cue_network(
+            str(brain_path),
+            category="coding",
+            project=project_name,
+            keywords=memory['files'],
+            memory_id=memory['id'],
+            operation="add"
+        )
 
-        # 更新索引
-        update_brain_index(brain_path, memory)
+        if not brain_updated or not cue_updated:
+            if not args.quiet:
+                print("Failed to update brain index/cue network for auto memory write.")
+                print(f"  memory_file: {memory_path}")
+            return 1
 
         if not args.quiet:
             print(f"\nMemory created: {memory['id']}")
