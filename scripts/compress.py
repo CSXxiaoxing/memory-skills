@@ -19,12 +19,13 @@ import re
 import json
 import argparse
 import shutil
+import yaml
 from datetime import datetime
 from pathlib import Path
 
 script_dir = Path(__file__).parent
 sys.path.insert(0, str(script_dir))
-from project_utils import read_file_safely
+from project_utils import read_file_safely, get_memory_dir, resolve_brain_path
 
 
 def extract_structure(content):
@@ -269,6 +270,130 @@ def apply_compression(memory_path, compressed_content, archive_original=True):
     }
 
 
+def get_all_memory_files(brain_path: Path, category: str = None, quality_threshold: int = None) -> list[Path]:
+    """
+    获取所有符合条件的记忆文件
+    
+    Args:
+        brain_path: 大脑目录路径
+        category: 指定类别, None表示所有类别
+        quality_threshold: 质量分数阈值, 只压缩低于此分数的记忆
+    
+    Returns:
+        list[Path]: 记忆文件路径列表
+    """
+    memory_dir = get_memory_dir(str(brain_path))
+    memory_files = []
+    
+    # 遍历所有类别目录
+    for cat_dir in memory_dir.iterdir():
+        if not cat_dir.is_dir():
+            continue
+        if category and cat_dir.name != category:
+            continue
+            
+        # 遍历目录下的md文件
+        for file in cat_dir.glob('*.md'):
+            if quality_threshold is not None:
+                # 读取YAML元数据检查质量分数
+                content = read_file_safely(str(file))
+                if content:
+                    yaml_match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
+                    if yaml_match:
+                        try:
+                            metadata = yaml.safe_load(yaml_match.group(1))
+                            if metadata and metadata.get('quality_score', 100) >= quality_threshold:
+                                continue  # 质量高于阈值,跳过
+                        except:
+                            pass  # 解析失败,继续处理
+            
+            memory_files.append(file)
+    
+    return memory_files
+
+
+def batch_compress(brain_path: Path, category: str = None, quality_threshold: int = None, mode: str = 'legacy') -> dict:
+    """
+    批量压缩记忆
+    
+    Args:
+        brain_path: 大脑目录路径
+        category: 指定类别压缩
+        quality_threshold: 质量分数阈值, 只压缩低于此分数的记忆
+        mode: 压缩模式, legacy或prepare/apply
+    
+    Returns:
+        dict: 压缩结果统计
+    """
+    memory_files = get_all_memory_files(brain_path, category, quality_threshold)
+    total = len(memory_files)
+    success = 0
+    failed = 0
+    total_original = 0
+    total_compressed = 0
+    
+    results = []
+    
+    for file in memory_files:
+        try:
+            if mode == 'legacy':
+                # 机械压缩
+                content = read_file_safely(str(file))
+                if not content:
+                    failed += 1
+                    continue
+                    
+                original_len = len(content)
+                compressed_content = legacy_compress(content)
+                compressed_len = len(compressed_content)
+                
+                # 归档并保存
+                archive_dir = brain_path / 'archive'
+                os.makedirs(archive_dir, exist_ok=True)
+                
+                filename = file.name
+                name, ext = os.path.splitext(filename)
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                archived_name = f"{name}_{timestamp}{ext}"
+                archived_path = archive_dir / archived_name
+                
+                shutil.move(str(file), str(archived_path))
+                
+                with open(file, 'w', encoding='utf-8') as f:
+                    f.write(compressed_content)
+                
+                total_original += original_len
+                total_compressed += compressed_len
+                success += 1
+                
+                results.append({
+                    'file': str(file),
+                    'status': 'success',
+                    'original_length': original_len,
+                    'compressed_length': compressed_len,
+                    'compression_ratio': compressed_len / original_len if original_len > 0 else 0
+                })
+                
+        except Exception as e:
+            failed += 1
+            results.append({
+                'file': str(file),
+                'status': 'failed',
+                'error': str(e)
+            })
+    
+    return {
+        'total': total,
+        'success': success,
+        'failed': failed,
+        'total_original_length': total_original,
+        'total_compressed_length': total_compressed,
+        'total_space_saved': total_original - total_compressed,
+        'average_compression_ratio': total_compressed / total_original if total_original > 0 else 0,
+        'results': results
+    }
+
+
 def legacy_compress(content):
     """
     旧版机械压缩(向后兼容)
@@ -352,22 +477,45 @@ def main():
   --apply          从stdin读取LLM压缩结果并应用
   --legacy         使用旧版机械压缩(向后兼容)
 
+批量压缩选项:
+  --batch          批量压缩所有符合条件的记忆
+  --all            压缩所有记忆(等价于 --batch)
+  --category       指定压缩的类别(coding/design/docs等)
+  --quality-threshold 只压缩质量分数低于此值的记忆(默认: 50)
+  --brain-path     指定brain.md路径,默认自动检测
+
 示例:
-  # 新模式: LLM主导
+  # 新模式: LLM主导压缩单个文件
   python compress.py --memory file.md --prepare
   # (LLM处理输出)
   python compress.py --memory file.md --apply
   
-  # 旧模式: 机械压缩
+  # 旧模式: 机械压缩单个文件
   python compress.py --memory file.md --legacy
+  
+  # 批量压缩所有记忆
+  python compress.py --all --mode legacy
+  
+  # 批量压缩coding类别记忆
+  python compress.py --batch --category coding
+  
+  # 批量压缩质量低于50分的记忆
+  python compress.py --batch --quality-threshold 50
         """
     )
     
-    parser.add_argument('--memory', type=str, required=True, help='记忆文件路径')
+    parser.add_argument('--memory', type=str, help='记忆文件路径(单个压缩时必填)')
     parser.add_argument('--mode', type=str, choices=['prepare', 'apply', 'legacy'], 
-                       default='prepare', help='工作模式')
+                       default='legacy', help='工作模式')
     parser.add_argument('--no-archive', action='store_true', help='不归档原始文件')
     parser.add_argument('--output', type=str, help='输出路径(仅legacy模式)')
+    
+    # 批量压缩参数
+    parser.add_argument('--batch', action='store_true', help='批量压缩记忆')
+    parser.add_argument('--all', action='store_true', help='压缩所有记忆')
+    parser.add_argument('--category', type=str, help='指定压缩的类别')
+    parser.add_argument('--quality-threshold', type=int, default=50, help='质量分数阈值')
+    parser.add_argument('--brain-path', type=str, help='指定brain.md路径')
     
     args = parser.parse_args()
     
