@@ -22,6 +22,7 @@ sys.path.insert(0, str(script_dir))
 from load_brain import load_brain
 from memory_defaults import CONTEXT_PACK_MAX_CHARS_DEFAULT
 from project_utils import resolve_brain_path
+from memory_extensions import _extract_correction_entries
 
 
 def read_file_safely(path: Path) -> str:
@@ -113,11 +114,26 @@ def extract_recent_memory_index(brain_text: str, max_items: int = 8) -> list[str
     return rows[:max_items]
 
 
+def extract_correction_lessons(lessons_text: str, max_items: int = 5) -> list[str]:
+    """提取最近的结构化纠正记忆，优先放入上下文"""
+    if not lessons_text:
+        return []
+    corrections = _extract_correction_entries(lessons_text)
+    out = []
+    for corr in corrections[:max_items]:
+        points = corr.get('correction_points', '')[:100]
+        solution = corr.get('correct_solution', '')[:100]
+        line = f"[{corr['created_at'][:10]}] ❌ {points} → ✅ {solution}"
+        out.append(line)
+    return out
+
+
 def build_context_lines(
     *,
     project_name: str,
     prefs: list[str],
     lessons: list[str],
+    correction_lessons: list[str],
     recent_memories: list[str],
     fragment_notes: list[str],
     session_summaries: list[str],
@@ -126,14 +142,16 @@ def build_context_lines(
         f"Project: {project_name}",
         "",
         "Reasoning rules:",
-        "- prioritize lessons to avoid repeating mistakes",
-        "- follow stable user preferences before style choices",
-        "- use recent memories only when relevant",
+        "- PRIORITIZE CORRECTION LESSONS FIRST to never repeat past mistakes",
+        "- follow user preferences strictly before any style choices",
+        "- use recent memories only when relevant to current task",
         "",
-        "User preferences:",
+        "⚠️ CRITICAL CORRECTIONS (never repeat these mistakes):",
     ]
+    lines.extend([f"- {x}" for x in (correction_lessons or ["(none)"])])
+    lines.extend(["", "User preferences:"])
     lines.extend([f"- {x}" for x in (prefs or ["(none)"])])
-    lines.extend(["", "Lessons to avoid repeating mistakes:"])
+    lines.extend(["", "Lessons learned:"])
     lines.extend([f"- {x}" for x in (lessons or ["(none)"])])
     lines.extend(["", "Recent standalone memories:"])
     lines.extend([f"- {x}" for x in (recent_memories or ["(none)"])])
@@ -172,6 +190,7 @@ def build_context_pack(brain_path: Path, max_chars: int = CONTEXT_PACK_MAX_CHARS
     prefs = extract_profile_preferences(profile_text)
     session_summaries = extract_session_summaries(profile_text)
     lessons = extract_lessons(lessons_text)
+    correction_lessons = extract_correction_lessons(lessons_text, max_items=5)
     recent_memories = extract_recent_memory_index(brain_text)
     fragment_notes = extract_fragment_notes(fragment_text)
 
@@ -179,6 +198,7 @@ def build_context_pack(brain_path: Path, max_chars: int = CONTEXT_PACK_MAX_CHARS
         project_name=brain_dir.parent.name if brain_dir.parent else "unknown",
         prefs=prefs,
         lessons=lessons,
+        correction_lessons=correction_lessons,
         recent_memories=recent_memories,
         fragment_notes=fragment_notes,
         session_summaries=session_summaries,

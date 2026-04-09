@@ -28,7 +28,7 @@ from memory_defaults import (
     SESSION_SUMMARY_MAX_MEMORIES_DEFAULT,
     SESSION_SUMMARY_MAX_ROWS_DEFAULT,
 )
-from project_utils import resolve_brain_path
+from project_utils import resolve_brain_path, update_cue_network
 from session_summary import (
     build_session_summary,
     collect_recent_memories,
@@ -107,6 +107,8 @@ def main() -> None:
         else resolve_brain_path(start_path=args.project_root or os.getcwd())
     )
     load_brain(str(brain_path))
+    # 统一刷新统计（总记忆数/类别索引等），确保与磁盘真实数据一致
+    update_cue_network(str(brain_path))
 
     summary_result = None
     if not args.skip_session_summary:
@@ -134,4 +136,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -24,6 +24,9 @@ from pathlib import Path
 from typing import Optional, List, Dict
 
 script_dir = Path(__file__).parent
+sys.path.insert(0, str(script_dir))
+
+from project_utils import find_project_root
 
 
 def run_command(cmd, cwd=None):
@@ -144,7 +147,7 @@ def generate_change_record(files: List[Dict], analysis: Dict, cwd: str = None) -
 def append_to_working_memory(record: str, base_path: Path = None) -> bool:
     """追加到当前工作记忆"""
     if base_path is None:
-        base_path = script_dir.parent
+        base_path = find_project_root(os.getcwd())
 
     storage = base_path / ".memory" / "working"
 
@@ -185,7 +188,7 @@ def append_to_working_memory(record: str, base_path: Path = None) -> bool:
 def create_change_memory(changes: List[Dict], analysis: Dict, cwd: str = None, base_path: Path = None) -> Dict:
     """创建变更记忆"""
     if base_path is None:
-        base_path = script_dir.parent
+        base_path = find_project_root(os.getcwd())
 
     now = datetime.now()
     memory_id = f"change_{now.strftime('%Y%m%d_%H%M%S')}"
@@ -243,10 +246,12 @@ def main():
     parser.add_argument("--since", default="1 hour ago", help="检查时间范围")
     parser.add_argument("--dir", default=".", help="监控目录")
     parser.add_argument("--create-memory", action="store_true", help="创建变更记忆")
+    parser.add_argument("--project-root", type=str, help="项目根目录(可选)")
 
     args = parser.parse_args()
 
     cwd = os.getcwd()
+    project_root = find_project_root(args.project_root or cwd)
 
     if args.check or args.create_memory:
         # 检查变更
@@ -260,7 +265,7 @@ def main():
         print(f"Summary: {analysis['summary']}")
 
         if args.create_memory:
-            memory = create_change_memory(files, analysis, cwd)
+            memory = create_change_memory(files, analysis, cwd, base_path=project_root)
             print(f"Change memory created: {memory['id']}")
             return 0
 
@@ -287,7 +292,7 @@ def main():
 
                 # 追加到工作记忆
                 record = generate_change_record(files, analysis, cwd)
-                if append_to_working_memory(record):
+                if append_to_working_memory(record, base_path=project_root):
                     print("  → Appended to working memory")
 
                 last_check = files

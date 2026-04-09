@@ -22,6 +22,9 @@ from pathlib import Path
 from typing import Optional, List, Dict
 
 script_dir = Path(__file__).parent
+sys.path.insert(0, str(script_dir))
+
+from project_utils import find_project_root
 
 
 # ============== 记忆类型定义 ==============
@@ -58,11 +61,16 @@ MEMORY_TYPES = {
 }
 
 
+def resolve_base_path(base_path: Path | None = None) -> Path:
+    """解析项目级存储根目录（优先.git/项目配置）"""
+    start_path = base_path if base_path is not None else os.getcwd()
+    return find_project_root(start_path)
+
+
 def get_memory_storage(memory_type: str, base_path: Path = None) -> Path:
     """获取记忆存储路径"""
-    if base_path is None:
-        base_path = script_dir.parent
-    return base_path / MEMORY_TYPES[memory_type]["storage"]
+    resolved_base = resolve_base_path(base_path)
+    return resolved_base / MEMORY_TYPES[memory_type]["storage"]
 
 
 def ensure_memory_dirs(base_path: Path = None):
@@ -388,7 +396,7 @@ def should_forget(memory_id: str, memory_type: str, llm_judgment: str = None, ba
 def archive_memory(memory_id: str, memory_type: str, reason: str, base_path: Path = None):
     """归档记忆"""
     storage = get_memory_storage(memory_type, base_path)
-    archive_storage = script_dir.parent / ".memory" / "archive"
+    archive_storage = resolve_base_path(base_path) / ".memory" / "archive"
 
     memory_file = storage / f"{memory_id}.md"
     if not memory_file.exists():
@@ -505,6 +513,7 @@ def get_recent_memories(memory_type: str = "all", limit: int = 5, base_path: Pat
 
 def main():
     parser = argparse.ArgumentParser(description="类脑记忆系统")
+    parser.add_argument("--project-root", type=str, help="项目根目录(可选)")
     subparsers = parser.add_subparsers(dest="command", help="命令")
 
     # 创建工作记忆
@@ -543,7 +552,7 @@ def main():
 
     args = parser.parse_args()
 
-    base_path = script_dir.parent
+    base_path = resolve_base_path(args.project_root or os.getcwd())
     ensure_memory_dirs(base_path)
 
     if args.command == "create":

@@ -294,7 +294,8 @@ def _parse_lesson_counts(content: str) -> dict[str, int]:
     return counts
 
 
-def _extract_incident_rows(content: str) -> list[str]:
+def _extract_incident_rows(content: str) -> list[dict]:
+    """提取事件行，支持新结构化格式"""
     if not content:
         return []
     pattern = (
@@ -310,8 +311,47 @@ def _extract_incident_rows(content: str) -> list[str]:
     for line in m.group(1).splitlines():
         line = line.strip()
         if line.startswith("|") and line.count("|") >= 5 and "| - | - | - | - |" not in line:
-            rows.append(line)
+            parts = [p.strip() for p in line.strip("|").split("|")]
+            if len(parts) >= 4:
+                rows.append({
+                    "time": parts[0],
+                    "memory_id": parts[1],
+                    "type": parts[2],
+                    "lesson": parts[3]
+                })
     return rows[:100]
+
+
+def _extract_correction_entries(content: str) -> list[dict]:
+    """提取结构化纠正记忆条目"""
+    if not content:
+        return []
+    entries = []
+    # 匹配结构化纠正记忆块
+    pattern = r"---\n((?:.|\n)*?)\n---\n((?:.|\n)*?)(?=\n---\n|$)"
+    for m in re.finditer(pattern, content, flags=re.MULTILINE):
+        front_matter = m.group(1)
+        body = m.group(2)
+        entry = {}
+        for line in front_matter.splitlines():
+            line = line.strip()
+            if ":" in line:
+                key, value = line.split(":", 1)
+                key = key.strip()
+                value = value.strip()
+                if key == "reuse_count":
+                    value = int(value) if value.isdigit() else 0
+                entry[key] = value
+        if entry.get("type") == "correction":
+            entry["content"] = body.strip()
+            entries.append(entry)
+    return entries
+
+
+def generate_correction_id() -> str:
+    """生成唯一纠正记忆ID"""
+    now = datetime.now()
+    return f"corr_{now.strftime('%Y%m%d_%H%M%S')}_{str(now.microsecond // 1000).zfill(3)}"
 
 
 def extract_learning_items(title: str, content: str, keywords: list[str] | None = None, limit: int = 6) -> list[str]:
@@ -349,23 +389,72 @@ def update_lessons_learned(
     title: str,
     content: str,
     keywords: list[str] | None = None,
+    correction_info: dict | None = None,
 ) -> dict:
+    """
+    更新经验库，支持普通学习记忆和结构化纠正记忆
+    
+    Args:
+        correction_info: 结构化纠正信息，包含：
+            - error_scene: 错误场景
+            - error_content: 错误内容
+            - correction_points: 纠正要点
+            - correct_solution: 正确方案
+            - quality_score: 质量分数（默认95）
+            - strength: 记忆强度（默认1.5）
+    """
     items = extract_learning_items(title, content, keywords)
-    if not items:
-        return {"updated": False, "path": str(Path(brain_path).parent / "lessons_learned.md"), "items_added": 0}
-
     target = Path(brain_path).parent / "lessons_learned.md"
     old = read_file_safely(str(target)) or ""
+    now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    
+    # 处理结构化纠正记忆
+    correction_added = False
+    structured_corrections = _extract_correction_entries(old)
+    if correction_info is not None:
+        # 生成纠正记忆ID
+        corr_id = correction_info.get("id") or generate_correction_id()
+        correction_entry = {
+            "id": corr_id,
+            "type": "correction",
+            "memory_id": memory_id,
+            "error_scene": _sanitize_inline(correction_info.get("error_scene", "")),
+            "error_content": _sanitize_inline(correction_info.get("error_content", "")),
+            "correction_points": _sanitize_inline(correction_info.get("correction_points", "")),
+            "correct_solution": _sanitize_inline(correction_info.get("correct_solution", "")),
+            "keywords": ",".join(keywords or []),
+            "quality_score": correction_info.get("quality_score", 95),
+            "strength": correction_info.get("strength", 1.5),
+            "created_at": now,
+            "reuse_count": 0
+        }
+        structured_corrections.insert(0, correction_entry)
+        correction_added = True
+        
+        # 自动提取纠正相关的学习条目
+        correction_items = [
+            correction_entry["error_scene"],
+            correction_entry["correction_points"],
+            correction_entry["correct_solution"]
+        ]
+        correction_items = [item for item in correction_items if item]
+        items.extend(correction_items)
+    
+    # 处理规则和事件
     counts = _parse_lesson_counts(old)
     incident_rows = _extract_incident_rows(old)
-    now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    incident_type = "correction" if _contains_hint(f"{title}\n{content}", ["fix", "fixed", "correct", "纠正", "修复"]) else "mistake"
+    incident_type = "correction" if correction_info is not None or _contains_hint(f"{title}\n{content}", ["fix", "fixed", "correct", "纠正", "修复"]) else "mistake"
 
     for it in items:
         counts[it] = counts.get(it, 0) + 1
 
     for it in reversed(items):
-        row = f"| {now} | {memory_id} | {incident_type} | {_sanitize_inline(it)} |"
+        row = {
+            "time": now,
+            "memory_id": memory_id,
+            "type": incident_type,
+            "lesson": _sanitize_inline(it)
+        }
         incident_rows.insert(0, row)
     incident_rows = incident_rows[:100]
 
@@ -373,11 +462,13 @@ def update_lessons_learned(
     stable = [(k, v) for k, v in ranked if v >= 2][:30]
     emerging = [(k, v) for k, v in ranked if v < 2][:30]
 
+    # 构建新文档
     lines = [
         "---",
-        "version: 1",
+        "version: 2",
         f"updated_at: {now}",
         f"total_lessons: {len(counts)}",
+        f"total_corrections: {len(structured_corrections)}",
         "---",
         "",
         "# Lessons Learned",
@@ -388,7 +479,34 @@ def update_lessons_learned(
     lines.extend(["", "## Emerging Rules (<2)"])
     lines.extend([f"- [{cnt}] {txt}" for txt, cnt in emerging] if emerging else ["- [0] None yet"])
     lines.extend(["", "## Recent Incidents", "| Time | Memory ID | Type | Lesson |", "|------|-----------|------|--------|"])
-    lines.extend(incident_rows if incident_rows else ["| - | - | - | - |"])
+    lines.extend([
+        f"| {row['time']} | {row['memory_id']} | {row['type']} | {row['lesson']} |" 
+        for row in incident_rows
+    ] if incident_rows else ["| - | - | - | - |"])
+    
+    # 新增结构化纠正记忆部分
+    lines.extend(["", "## Structured Corrections", ""])
+    for corr in structured_corrections[:100]:  # 保留最新100条纠正记录
+        lines.extend([
+            "---",
+            f"id: {corr['id']}",
+            f"type: {corr['type']}",
+            f"memory_id: {corr['memory_id']}",
+            f"error_scene: {corr['error_scene']}",
+            f"error_content: {corr['error_content']}",
+            f"correction_points: {corr['correction_points']}",
+            f"correct_solution: {corr['correct_solution']}",
+            f"keywords: {corr['keywords']}",
+            f"quality_score: {corr['quality_score']}",
+            f"strength: {corr['strength']}",
+            f"created_at: {corr['created_at']}",
+            f"reuse_count: {corr['reuse_count']}",
+            "---",
+            "",
+            corr.get("content", ""),
+            ""
+        ])
+
     lines.append("")
 
     target.write_text("\n".join(lines), encoding="utf-8")
@@ -397,4 +515,6 @@ def update_lessons_learned(
         "path": str(target),
         "items_added": len(items),
         "stable_rules": len(stable),
+        "correction_added": correction_added,
+        "correction_id": corr_id if correction_added else None,
     }

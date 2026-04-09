@@ -5,12 +5,15 @@
 ## 核心能力
 
 - 项目级隔离记忆：每个项目独立 `.memory/`，不混淆
+- 唯一存储根：优先按 `.git` 根（其次项目配置）定位，统一写入 `<project-root>/.memory/`
+- 重复目录自愈：若检测到子目录 shadow `.memory/`，会自动合并到根 `.memory/` 并清理
 - 触发即写入：每次触发记忆行为都写入，不只第一条
 - 零散记忆池：小改动进入 `fragment_memory.md`，超限自动遗忘低价值并压缩
 - 纠错经验库：错误/修复/纠正沉淀到 `lessons_learned.md`
 - 偏好画像：`user_profile.md` 持续累积用户偏好
 - 低 token 上下文：`context_pack.py` 输出限长记忆上下文
 - 脑刷新闭环：`create_memory -> refresh_brain -> context_pack`
+- 统计自校准：`refresh_brain.py` 会按磁盘真实数据重算总记忆数与类别索引（含 docs/other 扩展统计）
 
 ## 关键脚本
 
@@ -109,4 +112,3 @@ python scripts/session_summary.py --lookback-hours 8
 - 触发即写：触发后不能跳过写入
 - 用后刷新：写完必须刷新脑上下文
 - 低占用：上下文包严格限长，避免挤占思考 token
-

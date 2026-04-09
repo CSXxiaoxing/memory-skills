@@ -419,7 +419,7 @@ def main():
     args = parser.parse_args()
 
     # 设置工作目录
-    cwd = args.cwd or script_dir.parent
+    cwd = str(find_project_root(args.cwd or os.getcwd()))
 
     # 设置brain路径
     if args.brain_path:

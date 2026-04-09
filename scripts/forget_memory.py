@@ -24,6 +24,17 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 
 script_dir = Path(__file__).parent
+sys.path.insert(0, str(script_dir))
+
+from project_utils import get_memory_dir, resolve_brain_path
+
+
+def resolve_memory_paths(brain_path: Path) -> tuple[Path, Path]:
+    """根据brain路径解析记忆目录和归档目录"""
+    brain_path = Path(brain_path)
+    memories_dir = get_memory_dir(brain_path)
+    archive_dir = brain_path.parent / "archive"
+    return memories_dir, archive_dir
 
 
 def load_brain_index(brain_path):
@@ -104,7 +115,7 @@ def extract_files_from_memory(memory_content):
     return list(set(files))
 
 
-def check_conflict_forgetting(memory_id, memories_data, current_diff_files):
+def check_conflict_forgetting(memory_id, memories_data, current_diff_files, memories_dir):
     """
     检查是否应该冲突遗忘
 
@@ -118,7 +129,6 @@ def check_conflict_forgetting(memory_id, memories_data, current_diff_files):
         return False, None
 
     # 获取记忆内容
-    memories_dir = script_dir.parent / "memories"
     content = get_memory_content(memory_id, memories_dir)
 
     if not content:
@@ -217,7 +227,7 @@ def archive_memory(memory_id, memories_dir, archive_dir, reason=""):
         if memory_id.startswith("diff_"):
             mem_file = memories_dir / category / f"{memory_id}.md"
         elif memory_id.startswith("mem_"):
-            mem_file = memories_dir / category / memory_id[4:] + ".md"
+            mem_file = memories_dir / category / f"{memory_id[4:]}.md"
         if mem_file.exists():
             source_file = mem_file
             break
@@ -300,8 +310,7 @@ def check_and_forget(brain_path, current_diff_files=None, dry_run=True):
         current_diff_files: 当前diff涉及的文件列表
         dry_run: True=只检查不执行，False=执行遗忘
     """
-    memories_dir = script_dir.parent / "memories"
-    archive_dir = script_dir.parent / ".memory" / "archive"
+    memories_dir, archive_dir = resolve_memory_paths(Path(brain_path))
 
     # 确保目录存在
     archive_dir.mkdir(parents=True, exist_ok=True)
@@ -328,7 +337,7 @@ def check_and_forget(brain_path, current_diff_files=None, dry_run=True):
         # 1. 检查冲突遗忘
         if current_diff_files:
             is_conflict, conflict_info = check_conflict_forgetting(
-                memory_id, memories_data, current_diff_files
+                memory_id, memories_data, current_diff_files, memories_dir
             )
             if is_conflict:
                 forget_reason = conflict_info["reason"]
@@ -369,8 +378,7 @@ def check_and_forget(brain_path, current_diff_files=None, dry_run=True):
 
 def get_forget_stats(brain_path):
     """获取遗忘统计"""
-    memories_dir = script_dir.parent / "memories"
-    archive_dir = script_dir.parent / ".memory" / "archive"
+    memories_dir, archive_dir = resolve_memory_paths(Path(brain_path))
 
     # 加载当前记忆
     memories_data = load_brain_index(brain_path)
@@ -426,14 +434,15 @@ def main():
     parser.add_argument("--archive", type=str, help="手动归档指定记忆ID")
     parser.add_argument("--stats", action="store_true", help="显示遗忘统计")
     parser.add_argument("--brain-path", type=str, help="brain.md路径")
+    parser.add_argument("--project-root", type=str, help="项目根目录(可选,用于自动定位brain)")
 
     args = parser.parse_args()
 
     # 设置brain路径
     if args.brain_path:
-        brain_path = Path(args.brain_path)
+        brain_path = resolve_brain_path(explicit_path=args.brain_path)
     else:
-        brain_path = script_dir.parent / "brain.md"
+        brain_path = resolve_brain_path(start_path=args.project_root or os.getcwd())
 
     if not brain_path.exists():
         print(f"Brain file not found: {brain_path}")
@@ -479,8 +488,7 @@ def main():
 
     # 手动归档
     if args.archive:
-        memories_dir = script_dir.parent / "memories"
-        archive_dir = script_dir.parent / ".memory" / "archive"
+        memories_dir, archive_dir = resolve_memory_paths(Path(brain_path))
         success, msg = archive_memory(args.archive, memories_dir, archive_dir, "Manual archive")
         if success:
             update_brain_after_forget(brain_path, args.archive)

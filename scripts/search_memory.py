@@ -25,7 +25,7 @@ from datetime import datetime
 script_dir = Path(__file__).parent
 sys.path.insert(0, str(script_dir))
 from load_brain import load_brain
-from project_utils import resolve_brain_path, get_memory_dir, read_file_safely
+from project_utils import resolve_brain_path, get_memory_dir, read_file_safely, is_keyword_match, calculate_semantic_similarity
 
 
 def _strip_quotes(value: str) -> str:
@@ -312,13 +312,25 @@ def collect_candidate_memories(brain_data, brain_path, category=None, project=No
             if project and metadata.get('project') == project:
                 preliminary_score += 30
             if keywords:
-                memory_keywords = set(metadata.get('keywords', []))
-                target_keywords = set(keywords)
-                matched = memory_keywords & target_keywords
-                preliminary_score += min(20, len(matched) * 5)
+                memory_keywords = metadata.get('keywords', [])
+                keyword_score = 0
+                for target_kw in keywords:
+                    if is_keyword_match(target_kw, memory_keywords):
+                        keyword_score += 5
+                preliminary_score += min(20, keyword_score)
+        
+        # 纠正记忆额外加分，优先排序
+        is_correction = metadata.get('quality_score', 0) >= 90 or \
+                       metadata.get('strength', 0) >= 1.5 or \
+                       'correction' in [kw.lower() for kw in metadata.get('keywords', [])]
+        if is_correction:
+            preliminary_score += 30  # 纠正记忆加30分优先级
+            metadata['is_correction'] = True
+        else:
+            metadata['is_correction'] = False
 
-            metadata['preliminary_score'] = preliminary_score
-            candidates.append(metadata)
+        metadata['preliminary_score'] = preliminary_score
+        candidates.append(metadata)
 
         candidates.sort(key=lambda m: m.get('preliminary_score', 0), reverse=True)
         return candidates[:max_candidates]
@@ -364,6 +376,16 @@ def collect_candidate_memories(brain_data, brain_path, category=None, project=No
             matched = memory_keywords & target_keywords
             preliminary_score += min(20, len(matched) * 5)
         
+        # 纠正记忆额外加分，优先排序
+        is_correction = metadata.get('quality_score', 0) >= 90 or \
+                       metadata.get('strength', 0) >= 1.5 or \
+                       'correction' in [kw.lower() for kw in metadata.get('keywords', [])]
+        if is_correction:
+            preliminary_score += 30  # 纠正记忆加30分优先级
+            metadata['is_correction'] = True
+        else:
+            metadata['is_correction'] = False
+
         metadata['preliminary_score'] = preliminary_score
         
         candidates.append(metadata)
@@ -598,15 +620,33 @@ def legacy_search(brain_data, brain_path, category=None, project=None, keywords=
         
         # 关键词匹配
         if keywords:
-            memory_keywords = set(metadata['keywords'])
-            target_keywords = set(keywords)
-            matched = memory_keywords & target_keywords
-            keyword_score = min(20, len(matched) * 5)
+            keyword_score = 0
+            for target_kw in keywords:
+                if is_keyword_match(target_kw, metadata['keywords']):
+                    keyword_score += 5
+            keyword_score = min(20, keyword_score)
             match_score += keyword_score
             match_details['keyword_match'] = keyword_score
         
-        # 只保留有匹配的记忆
-        if match_score > 0:
+        # 语义相似度匹配
+        if 'query_intent' in locals() and query_intent and metadata.get('summary'):
+            semantic_score = int(calculate_semantic_similarity(query_intent, metadata['summary']) * 10)
+            match_score += semantic_score
+            match_details['semantic_match'] = semantic_score
+        
+        # 纠正记忆额外加分，优先排序
+        is_correction = metadata.get('quality_score', 0) >= 90 or \
+                       metadata.get('strength', 0) >= 1.5 or \
+                       'correction' in [kw.lower() for kw in metadata.get('keywords', [])]
+        if is_correction:
+            match_score += 30  # 纠正记忆加30分优先级
+            match_details['correction_priority'] = 30
+            metadata['is_correction'] = True
+        else:
+            metadata['is_correction'] = False
+        
+        # 只保留有匹配的记忆或是纠正记忆
+        if match_score > 0 or is_correction:
             metadata['match_score'] = match_score
             metadata['match_details'] = match_details
             metadata['summary'] = get_memory_summary(str(memory_path))

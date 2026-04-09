@@ -28,6 +28,7 @@ script_dir = Path(__file__).parent
 sys.path.insert(0, str(script_dir))
 
 from load_brain import load_brain
+from sync_index import sync_brain_index
 from project_utils import (
     find_project_root,
     resolve_brain_path,
@@ -336,6 +337,8 @@ def _finalize_memory_write(
             detail=metadata.get("title") or "fragment note",
         )
 
+        # 自动同步索引，确保统计准确
+        sync_result = sync_brain_index(brain_path)
         return {
             "status": "success",
             "stored_in": "fragment_memory",
@@ -344,6 +347,7 @@ def _finalize_memory_write(
             "profile_updated": profile_updated,
             "lessons_updated": lessons_updated,
             "brain_activity_updated": brain_activity_updated,
+            "index_synced": sync_result.get("success", False),
             "brain_path": str(brain_path),
             "brain_refresh_hint": f"python scripts/refresh_brain.py --max-chars {POST_WRITE_CONTEXT_MAX_CHARS_DEFAULT} --format text",
         }
@@ -368,10 +372,13 @@ def _finalize_memory_write(
         keywords=metadata.get("keywords", []),
     )
 
+    # 自动同步索引，确保统计准确
+    sync_result = sync_brain_index(brain_path)
     return {
         "status": "success",
         "stored_in": "standalone_memory",
         "standalone_memory_created": True,
+        "index_synced": sync_result.get("success", False),
         "memory": {
             "id": memory_id,
             "title": metadata.get("title"),
@@ -401,7 +408,7 @@ def main() -> None:
     parser.add_argument("--content", type=str, help="memory content")
     parser.add_argument("--brain-dominant", type=str, choices=["left", "right", "both"], help="brain dominant side")
     parser.add_argument("--quality-score", type=int, default=None, help="quality score")
-    parser.add_argument("--mode", type=str, choices=["prepare", "create", "evaluate", "extract-kw", "quick"], default="prepare")
+    parser.add_argument("--mode", type=str, choices=["auto", "prepare", "create", "evaluate", "extract-kw", "quick"], default="auto")
     parser.add_argument("--metadata", type=str, help="metadata json for create mode")
     parser.add_argument("--brain-path", type=str, help="path to brain.md")
     parser.add_argument("--project-root", type=str, help="project root (optional)")
@@ -409,13 +416,24 @@ def main() -> None:
     parser.add_argument("--respect-no-memory", action="store_true", help="skip write when decision=no_memory")
     parser.add_argument("--disable-fragment-routing", action="store_true", help="always create standalone memory")
     parser.add_argument("--fragment-max-chars", type=int, default=FRAGMENT_MAX_CHARS_DEFAULT, help="max chars for fragment_memory.md")
+    parser.add_argument("--correction", action="store_true", help="mark this memory as a correction memory (high priority)")
     args = parser.parse_args()
 
     brain_path = resolve_brain_path(explicit_path=args.brain_path) if args.brain_path else resolve_brain_path(start_path=args.project_root or os.getcwd())
     load_brain(str(brain_path))
 
+    # Auto mode: prefer write-on-trigger when content exists.
+    effective_mode = args.mode
+    if args.mode == "auto":
+        if args.metadata:
+            effective_mode = "create"
+        elif args.content or (not sys.stdin.isatty()):
+            effective_mode = "quick"
+        else:
+            effective_mode = "prepare"
+
     try:
-        if args.mode == "prepare":
+        if effective_mode == "prepare":
             content = args.content or ""
             eval_context = prepare_evaluation_context(content, args.category, args.project, args.title)
             kw_context = prepare_keyword_extraction_context(content, args.category, args.project, args.title)
@@ -445,7 +463,7 @@ def main() -> None:
             print(json.dumps(output, ensure_ascii=False, indent=2))
             return
 
-        if args.mode == "evaluate":
+        if effective_mode == "evaluate":
             content = args.content or ""
             eval_context = prepare_evaluation_context(content, args.category, args.project, args.title)
             prompt = (
@@ -461,7 +479,7 @@ def main() -> None:
             print(json.dumps({"status": "ready_for_llm", "prompt": prompt}, ensure_ascii=False, indent=2))
             return
 
-        if args.mode == "extract-kw":
+        if effective_mode == "extract-kw":
             content = args.content or ""
             kw_context = prepare_keyword_extraction_context(content, args.category, args.project, args.title)
             prompt = (
@@ -477,7 +495,7 @@ def main() -> None:
             print(json.dumps({"status": "ready_for_llm", "prompt": prompt}, ensure_ascii=False, indent=2))
             return
 
-        if args.mode == "quick":
+        if effective_mode == "quick":
             content = args.content
             if not content and not sys.stdin.isatty():
                 content = sys.stdin.read()
@@ -486,13 +504,26 @@ def main() -> None:
                 sys.exit(1)
 
             project_root = find_project_root(args.project_root or os.getcwd())
+            keywords = normalize_keywords(args.keywords) or simple_keyword_extraction(content)
+            quality_score = args.quality_score if args.quality_score is not None else estimate_quality_score(content)
+            strength = 1.0
+            
+            # 纠正记忆特殊处理
+            if args.correction:
+                quality_score = 95
+                strength = 1.5
+                keywords.extend(["correction", "error", "lesson learned"])
+                keywords = list(set(keywords))[:6]
+
             metadata = {
                 "title": args.title or infer_title(content),
                 "category": normalize_category(args.category),
                 "project": args.project or project_root.name,
-                "keywords": normalize_keywords(args.keywords) or simple_keyword_extraction(content),
+                "keywords": keywords,
                 "brain_dominant": args.brain_dominant or CATEGORY_BRAIN_DOMINANT.get(normalize_category(args.category), "both"),
-                "quality_score": args.quality_score if args.quality_score is not None else estimate_quality_score(content),
+                "quality_score": quality_score,
+                "strength": strength,
+                "is_correction": args.correction,
             }
             print(
                 json.dumps(
@@ -509,7 +540,7 @@ def main() -> None:
             )
             return
 
-        if args.mode == "create":
+        if effective_mode == "create":
             if not args.metadata:
                 print(json.dumps({"status": "error", "error": "NO_METADATA", "message": "metadata is required for create mode"}, ensure_ascii=False, indent=2))
                 sys.exit(1)
